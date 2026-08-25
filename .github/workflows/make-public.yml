@@ -1,0 +1,23 @@
+name: make-package-public
+
+on:
+  workflow_dispatch:
+
+permissions:
+  packages: write
+
+jobs:
+  public:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set GHCR package visibility to public
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -x
+          curl -sS -X PATCH \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/user/packages/container/minimax-h3-serverless-worker/visibility" \
+            -d '{"visibility":"public"}' | head -c 600
