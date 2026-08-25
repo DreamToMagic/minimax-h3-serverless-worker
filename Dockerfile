@@ -2,7 +2,9 @@
 # 基础镜像：本站已实测可跑 MiniMax H3 的 ComfyUI 镜像（CUDA 13.0 / PyTorch 2.10）
 FROM runpod/comfyui:cuda13.0
 
-ENV COMFY_DIR=/workspace/runpod-slim/ComfyUI \
+# 基础镜像里 ComfyUI 的真实位置是 /opt/comfyui-baked
+# （/workspace/runpod-slim/ComfyUI 只是 Pod 模式用的空挂载点）
+ENV COMFY_DIR=/opt/comfyui-baked \
     PIP_NO_CACHE_DIR=1
 
 WORKDIR $COMFY_DIR

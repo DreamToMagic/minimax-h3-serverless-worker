@@ -24,7 +24,7 @@ import requests
 import runpod
 
 COMFY_URL = os.environ.get("COMFY_URL", "http://127.0.0.1:8188")
-COMFY_OUTPUT_DIR = os.environ.get("COMFY_OUTPUT_DIR", "/workspace/runpod-slim/ComfyUI/output")
+COMFY_OUTPUT_DIR = os.environ.get("COMFY_OUTPUT_DIR", "/opt/comfyui-baked/output")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "2400"))

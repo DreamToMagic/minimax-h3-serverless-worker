@@ -5,7 +5,7 @@
 # 3) 运行 RunPod Serverless handler（前台，容器生命周期由它决定）
 set -u
 
-COMFY_DIR="${COMFY_DIR:-/workspace/runpod-slim/ComfyUI}"
+COMFY_DIR="${COMFY_DIR:-/opt/comfyui-baked}"
 LOG=/tmp/comfyui.log
 
 # 基础镜像在不同运行环境里 ComfyUI 位置可能不同：先探测 main.py 的真实位置
