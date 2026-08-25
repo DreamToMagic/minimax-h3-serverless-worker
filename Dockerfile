@@ -33,4 +33,6 @@ COPY handler.py /src/handler.py
 COPY requirements.txt /src/requirements.txt
 
 WORKDIR /src
+# 覆盖基础镜像可能存在的 ENTRYPOINT，确保 RunPod Serverless 执行我们的 start.sh
+ENTRYPOINT []
 CMD ["bash", "/start.sh"]

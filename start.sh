@@ -11,10 +11,14 @@ LOG=/tmp/comfyui.log
 echo "[worker] starting ComfyUI: $COMFY_DIR"
 cd "$COMFY_DIR" || exit 1
 
-# 如果 ComfyUI 已在运行则复用（镜像可能自带启动逻辑）
-if ! curl -sf http://127.0.0.1:8188/system_stats >/dev/null 2>&1; then
-  nohup python3 main.py --listen 127.0.0.1 --port 8188 --enable-cors-header --use-sage-attention > "$LOG" 2>&1 &
-fi
+# 清掉基础镜像可能已在运行的 ComfyUI，避免端口占用/进程混乱
+pkill -f 'python3 main.py' 2>/dev/null || true
+pkill -f 'python main.py' 2>/dev/null || true
+sleep 2
+
+# 后台启动 ComfyUI；日志同时写入 /tmp/comfyui.log 和 stdout，
+# 这样 RunPod 控制台日志里能直接看到报错
+( python3 main.py --listen 127.0.0.1 --port 8188 --enable-cors-header --use-sage-attention 2>&1 | tee -a "$LOG" ) &
 
 READY=0
 for i in $(seq 1 180); do
