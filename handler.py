@@ -52,8 +52,9 @@ def log(msg):
 def self_check():
     """Check models/CUDA/ComfyUI; called lazily on the first job.
 
-    Raises RuntimeError instead of exiting so the worker stays alive and the
-    platform can mark the job FAILED (and refund the user) when the node is bad.
+    If the node is broken we kill the container (os._exit) so RunPod marks the
+    worker unhealthy and replaces it. Raising an exception would only fail the
+    job and leave the bad worker in the pool to hurt the next user.
     """
     model_root = "/runpod-volume/models"
     missing = []
@@ -62,18 +63,20 @@ def self_check():
         if not os.path.isfile(p):
             missing.append(p)
     if missing:
-        msg = "missing model files: " + "; ".join(missing)
-        log("FATAL: " + msg)
-        raise RuntimeError(msg)
+        log("FATAL: missing model files: " + "; ".join(missing))
+        os._exit(1)
 
     try:
         import torch
         if not torch.cuda.is_available():
-            raise RuntimeError("CUDA not available")
+            log("FATAL: CUDA not available, killing worker for replacement")
+            os._exit(1)
         log(f"CUDA ok: {torch.cuda.get_device_name(0)}")
+    except SystemExit:
+        raise
     except Exception as e:  # pragma: no cover
-        log(f"FATAL: torch check failed: {e}")
-        raise RuntimeError(str(e))
+        log(f"FATAL: torch check failed: {e}, killing worker for replacement")
+        os._exit(1)
 
     for i in range(240):
         try:
@@ -86,7 +89,8 @@ def self_check():
         if i % 15 == 14:
             log(f"ComfyUI not ready yet ({i + 1} checks)")
         time.sleep(2)
-    raise RuntimeError("ComfyUI did not become healthy within 8 minutes")
+    log("FATAL: ComfyUI did not become healthy, killing worker for replacement")
+    os._exit(1)
 
 
 AUDIO_STYLE_PROMPTS = {
