@@ -7,10 +7,10 @@ ENV COMFY_DIR=/workspace/runpod-slim/ComfyUI \
 
 WORKDIR $COMFY_DIR
 
-# 1. 固定 ComfyUI 版本（MiniMax H3 兼容版本）
-RUN git fetch --depth=1 origin tag v0.30.2 || git fetch origin tag v0.30.2 \
-    && git checkout --detach v0.30.2 \
-    && python3 -m pip install -q -r requirements.txt
+# 1. 按镜像自带 requirements.txt 升级依赖（MiniMax H3 需要的
+#    comfy-kitchen / frontend 等版本由该文件锁定；镜像内 ComfyUI 目录
+#    不包含 .git，无法 fetch/checkout，故不做版本切换）
+RUN python3 -m pip install -q -r requirements.txt || echo "WARN: ComfyUI requirements install failed"
 
 # 2. 安装 SageAttention 与 Serverless 运行依赖
 RUN python3 -m pip install -q -U sageattention requests runpod
