@@ -347,27 +347,19 @@ def fit_resolution(w, h, max_area):
 
 
 def adapt_to_vram(vram_gb, width, height, length, steps):
-    """按实际显存自动降级，保证小卡也能跑（T8 README：16GB 需小画布/短片段 + 预检）。"""
-    use_swap = False
+    """小显存只开 UniBlockSwap 保底，绝不修改用户设定的分辨率/时长/步数。
+
+    若用户参数超出显存能力，ComfyUI 会 OOM 失败，平台按失败退款；
+    用户明确要求：不自动降级参数。
+    """
+    use_swap = vram_gb > 0 and vram_gb < 45
     if vram_gb <= 0:
-        return width, height, length, steps, True, "unknown"
-    if vram_gb < 17:
-        use_swap = True
-        width, height = fit_resolution(width, height, 512 * 288)
-        length = min(length, 56)
-        steps = min(steps, 8)
+        tier = "unknown"
+    elif vram_gb < 17:
         tier = "16G"
     elif vram_gb < 25:
-        use_swap = True
-        width, height = fit_resolution(width, height, 832 * 480)
-        length = min(length, 124)
-        steps = min(steps, 20)
         tier = "24G"
     elif vram_gb < 45:
-        use_swap = True
-        width, height = fit_resolution(width, height, 1024 * 576)
-        length = min(length, 124)
-        steps = min(steps, 20)
         tier = "32G"
     else:
         tier = "48G+"
