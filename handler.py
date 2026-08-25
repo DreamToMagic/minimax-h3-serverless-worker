@@ -48,7 +48,11 @@ def log(msg):
 
 
 def self_check():
-    """Fail fast if the node is broken or the volume is missing models."""
+    """Check models/CUDA/ComfyUI; called lazily on the first job.
+
+    Raises RuntimeError instead of exiting so the worker stays alive and the
+    platform can mark the job FAILED (and refund the user) when the node is bad.
+    """
     model_root = "/runpod-volume/models"
     missing = []
     for subdir, name in REQUIRED_MODELS:
@@ -56,32 +60,31 @@ def self_check():
         if not os.path.isfile(p):
             missing.append(p)
     if missing:
-        log("FATAL: missing model files:")
-        for p in missing:
-            log("  - " + p)
-        sys.exit(1)
+        msg = "missing model files: " + "; ".join(missing)
+        log("FATAL: " + msg)
+        raise RuntimeError(msg)
 
     try:
         import torch
         if not torch.cuda.is_available():
-            log("FATAL: CUDA not available")
-            sys.exit(1)
+            raise RuntimeError("CUDA not available")
         log(f"CUDA ok: {torch.cuda.get_device_name(0)}")
     except Exception as e:  # pragma: no cover
         log(f"FATAL: torch check failed: {e}")
-        sys.exit(1)
+        raise RuntimeError(str(e))
 
-    for _ in range(30):
+    for i in range(240):
         try:
             r = requests.get(f"{COMFY_URL}/system_stats", timeout=5)
             if r.status_code == 200:
-                log("ComfyUI healthy")
+                log(f"ComfyUI healthy after {i} checks")
                 return
         except Exception:
             pass
+        if i % 15 == 14:
+            log(f"ComfyUI not ready yet ({i + 1} checks)")
         time.sleep(2)
-    log("FATAL: ComfyUI not healthy")
-    sys.exit(1)
+    raise RuntimeError("ComfyUI did not become healthy within 8 minutes")
 
 
 def build_graph(prompt, width, height, length, steps, seed, model_file, use_swap=False):
@@ -267,7 +270,16 @@ def adapt_to_vram(vram_gb, width, height, length, steps):
     return width, height, length, steps, use_swap, tier
 
 
+_STARTUP_CHECKED = False
+
+
 def handler(job):
+    global _STARTUP_CHECKED
+    if not _STARTUP_CHECKED:
+        log("first job received: running startup self-check")
+        self_check()
+        _STARTUP_CHECKED = True
+
     job_input = job.get("input", {}) or {}
     job_id = str(job_input.get("job_id") or job.get("id") or "")
     prompt = str(job_input.get("prompt") or "a beautiful 3D anime girl dancing").strip()
@@ -312,6 +324,5 @@ def handler(job):
 
 
 if __name__ == "__main__":
-    self_check()
-    log("starting runpod serverless handler")
+    log("starting runpod serverless handler (listening immediately)")
     runpod.serverless.start({"handler": handler})

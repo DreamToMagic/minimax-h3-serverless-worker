@@ -16,31 +16,11 @@ pkill -f 'python3 main.py' 2>/dev/null || true
 pkill -f 'python main.py' 2>/dev/null || true
 sleep 2
 
-# 后台启动 ComfyUI；日志同时写入 /tmp/comfyui.log 和 stdout，
-# 这样 RunPod 控制台日志里能直接看到报错
+# 后台启动 ComfyUI；日志同时写入 /tmp/comfyui.log 和 stdout。
+# 注意：这里绝不能等待 ComfyUI 就绪——RunPod 要求 handler 在约 1 分钟内
+# 监听 8000 端口，等待会触发平台把 worker 判死。ComfyUI 的就绪检查
+# 推迟到 handler 收到第一个任务时进行。
 ( python3 main.py --listen 127.0.0.1 --port 8188 --enable-cors-header --use-sage-attention 2>&1 | tee -a "$LOG" ) &
-
-READY=0
-for i in $(seq 1 180); do
-  if curl -sf http://127.0.0.1:8188/system_stats >/dev/null 2>&1; then
-    echo "[worker] ComfyUI ready after ${i} checks"
-    READY=1
-    break
-  fi
-  if [ $((i % 15)) -eq 0 ]; then
-    echo "[worker] ComfyUI not ready yet (${i}), last log:"; tail -5 "$LOG" 2>/dev/null || true
-  fi
-  sleep 2
-done
-
-if [ "$READY" != "1" ]; then
-  echo "[worker] FATAL: ComfyUI failed to start"
-  tail -40 "$LOG" 2>/dev/null || true
-  exit 1
-fi
-
-echo "[worker] attention log:"
-grep -i -E 'sage|attention' "$LOG" | head -3 || true
 
 echo "[worker] starting handler"
 cd /src || exit 1
