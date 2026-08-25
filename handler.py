@@ -25,6 +25,7 @@ import runpod
 
 COMFY_URL = os.environ.get("COMFY_URL", "http://127.0.0.1:8188")
 COMFY_OUTPUT_DIR = os.environ.get("COMFY_OUTPUT_DIR", "/opt/comfyui-baked/output")
+COMFY_INPUT_DIR = os.environ.get("COMFY_INPUT_DIR", "/opt/comfyui-baked/input")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "2400"))
@@ -87,7 +88,32 @@ def self_check():
     raise RuntimeError("ComfyUI did not become healthy within 8 minutes")
 
 
-def build_graph(prompt, width, height, length, steps, seed, model_file, use_swap=False):
+AUDIO_STYLE_PROMPTS = {
+    "ambient": "背景音乐：轻柔环境音，自然氛围，无强烈旋律。",
+    "upbeat": "背景音乐：轻快活泼的电子游戏 BGM，节奏明显，旋律清晰。",
+    "electronic": "背景音乐：电子/Synthwave风格，带有合成器旋律和强烈节拍。",
+    "cinematic": "背景音乐：电影感配乐，宏大、有氛围感。",
+}
+
+
+def build_graph(prompt, width, height, length, steps, seed, model_file,
+                use_swap=False, mode="t2v", refs=None, audio_mode="auto", audio_prompt=""):
+    refs = refs or {}
+    images = refs.get("images") or []
+    videos = refs.get("videos") or []
+    audios = refs.get("audios") or []
+
+    # 音频风格并入提示词（与原 H3 工作台一致）
+    audio_description = ""
+    if audio_mode == "custom":
+        audio_description = (audio_prompt or "").strip()
+    elif audio_mode == "none":
+        audio_description = "No music, only ambient sound. 无音乐，仅环境音。"
+    elif AUDIO_STYLE_PROMPTS.get(audio_mode):
+        audio_description = AUDIO_STYLE_PROMPTS[audio_mode]
+    final_prompt = (prompt + "\n" + audio_description).strip() if audio_description else prompt
+    prompt_primary_audio_ordinal = 1 if audio_description else 0
+
     clip_src = ["3", 0]
     model_src = ["4b", 0]
     extra = {}
@@ -111,13 +137,6 @@ def build_graph(prompt, width, height, length, steps, seed, model_file, use_swap
             "model": ["4", 0],
             "lora_name": "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors",
             "strength_model": 1.0}},
-        "5": {"class_type": "MiniMaxH3AudioConditioningT8", "inputs": {
-            "clip": clip_src, "video_vae": ["1", 0], "audio_vae": ["2", 0],
-            "prompt": prompt, "width": width, "height": height, "length": length,
-            "audio_mode": "native", "audio_denoise_strength": 1.0,
-            "add_source_as_reference": True, "prompt_primary_audio_ordinal": 0,
-            "strict_prompt_tags": True, "ref_image_size": "match",
-            "reference_video_policy": "official_2_to_15s", "task_type": "T2VA"}},
         "6": {"class_type": "MiniMaxH3DualClockSamplerT8", "inputs": {
             "model": model_src, "av_latent": ["5", 1], "steps": steps,
             "shift_video": 12.0, "shift_audio": 3.0,
@@ -135,6 +154,71 @@ def build_graph(prompt, width, height, length, steps, seed, model_file, use_swap
             "save_metadata": True, "trim_to_audio": False, "pingpong": False,
             "save_output": True, "images": ["10", 0], "audio": ["10", 1]}},
     }
+
+    cond = {
+        "clip": clip_src, "video_vae": ["1", 0], "audio_vae": ["2", 0],
+        "prompt": final_prompt, "width": width, "height": height, "length": length,
+        "audio_mode": "native", "audio_denoise_strength": 1.0,
+        "add_source_as_reference": True,
+        "prompt_primary_audio_ordinal": prompt_primary_audio_ordinal,
+        "strict_prompt_tags": True, "ref_image_size": "match",
+        "reference_video_policy": "official_2_to_15s",
+    }
+
+    if mode == "i2v":
+        if not images:
+            raise RuntimeError("i2v 需要一张参考图")
+        extra["12"] = {"class_type": "LoadImage", "inputs": {"image": images[0]}}
+        cond["task_type"] = "I2VA"
+        cond["first_frame"] = ["12", 0]
+    elif mode == "fl2v":
+        if len(images) < 2:
+            raise RuntimeError("fl2v 需要首帧图和尾帧图")
+        extra["12"] = {"class_type": "LoadImage", "inputs": {"image": images[0]}}
+        extra["13"] = {"class_type": "LoadImage", "inputs": {"image": images[1]}}
+        cond["task_type"] = "FL2VA"
+        cond["first_frame"] = ["12", 0]
+        cond["last_frame"] = ["13", 0]
+    elif mode == "ref2v":
+        if not videos:
+            raise RuntimeError("ref2v 需要一段参考视频")
+        extra["12"] = {"class_type": "VHS_LoadVideo", "inputs": {
+            "video": videos[0], "force_rate": 0,
+            "custom_width": width, "custom_height": height,
+            "frame_load_cap": 0, "skip_first_frames": 0,
+            "select_every_nth": 1, "format": "None"}}
+        cond["task_type"] = "Ref2VA"
+        cond["ref_videos.ref_video_0"] = ["12", 0]
+    elif mode == "audio_ref":
+        if not audios:
+            raise RuntimeError("audio_ref 需要一段参考音频")
+        extra["12"] = {"class_type": "LoadAudio", "inputs": {"audio": audios[0]}}
+        cond["task_type"] = "T2VA"
+        cond["ref_audios.ref_audio_0"] = ["12", 0]
+    elif mode == "multi_ref":
+        if not (images or videos or audios):
+            raise RuntimeError("multi_ref 至少需要一个参考素材")
+        cond["task_type"] = "Ref2VA"
+        for i, name in enumerate(images[:9]):
+            nid = str(20 + i)
+            extra[nid] = {"class_type": "LoadImage", "inputs": {"image": name}}
+            cond[f"ref_images.ref_image_{i}"] = [nid, 0]
+        for i, name in enumerate(videos[:3]):
+            nid = str(30 + i)
+            extra[nid] = {"class_type": "VHS_LoadVideo", "inputs": {
+                "video": name, "force_rate": 0,
+                "custom_width": width, "custom_height": height,
+                "frame_load_cap": 0, "skip_first_frames": 0,
+                "select_every_nth": 1, "format": "None"}}
+            cond[f"ref_videos.ref_video_{i}"] = [nid, 0]
+        for i, name in enumerate(audios[:3]):
+            nid = str(40 + i)
+            extra[nid] = {"class_type": "LoadAudio", "inputs": {"audio": name}}
+            cond[f"ref_audios.ref_audio_{i}"] = [nid, 0]
+    else:
+        cond["task_type"] = "T2VA"
+
+    graph["5"] = {"class_type": "MiniMaxH3AudioConditioningT8", "inputs": cond}
     graph.update(extra)
     return graph
 
@@ -273,6 +357,32 @@ def adapt_to_vram(vram_gb, width, height, length, steps):
 _STARTUP_CHECKED = False
 
 
+def download_refs(refs):
+    """下载平台签名 URL 的参考素材到 ComfyUI input 目录。"""
+    result = {"images": [], "videos": [], "audios": []}
+    if not refs:
+        return result
+    os.makedirs(COMFY_INPUT_DIR, exist_ok=True)
+    for r in refs:
+        url = str(r.get("url") or "")
+        rtype = str(r.get("type") or "")
+        name = os.path.basename(str(r.get("name") or f"ref-{int(time.time())}"))
+        safe = "".join(c for c in name if c.isalnum() or c in "._-")[:160] or "ref.bin"
+        dest = os.path.join(COMFY_INPUT_DIR, safe)
+        log(f"downloading {rtype} ref: {safe}")
+        resp = requests.get(url, timeout=300)
+        resp.raise_for_status()
+        with open(dest, "wb") as f:
+            f.write(resp.content)
+        if rtype == "image":
+            result["images"].append(safe)
+        elif rtype == "video":
+            result["videos"].append(safe)
+        elif rtype == "audio":
+            result["audios"].append(safe)
+    return result
+
+
 def handler(job):
     global _STARTUP_CHECKED
     if not _STARTUP_CHECKED:
@@ -289,6 +399,10 @@ def handler(job):
     steps = int(job_input.get("steps") or 4)
     seed = int(job_input.get("seed") or 0)
     model = str(job_input.get("model") or "full")
+    mode = str(job_input.get("mode") or "t2v")
+    audio_mode = str(job_input.get("audio_mode") or "auto")
+    audio_prompt = str(job_input.get("audio_prompt") or "")
+    refs = download_refs(job_input.get("refs") or [])
     model_file = MODEL_FILES.get(model, MODEL_FILES["full"])
     # 卷内只保证完整 INT8；pruned 缺失时自动回退，避免坏单
     if not os.path.isfile(os.path.join("/runpod-volume/models", "diffusion_models", model_file)):
@@ -298,7 +412,9 @@ def handler(job):
     vram_gb = get_vram_gb()
     width, height, length, steps, use_swap, tier = adapt_to_vram(vram_gb, width, height, length, steps)
     log(f"job {job_id}: vram={vram_gb}G tier={tier} -> {width}x{height} len={length} steps={steps} swap={use_swap} model={model}")
-    graph = build_graph(prompt, width, height, length, steps, seed, model_file, use_swap=use_swap)
+    graph = build_graph(prompt, width, height, length, steps, seed, model_file,
+                        use_swap=use_swap, mode=mode, refs=refs,
+                        audio_mode=audio_mode, audio_prompt=audio_prompt)
     prompt_id = submit_prompt(graph)
     log(f"job {job_id}: submitted prompt_id={prompt_id}")
     paths = poll(prompt_id)
