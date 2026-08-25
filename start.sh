@@ -18,6 +18,20 @@ if [ ! -f "$COMFY_DIR/main.py" ]; then
   fi
 fi
 
+# 自定义节点和 extra_model_paths 构建时装在了默认目录，
+# 如果实际 ComfyUI 在别处（如 /opt/comfyui-baked），把它们搬过去
+if [ "$COMFY_DIR" != "/workspace/runpod-slim/ComfyUI" ]; then
+  SRC=/workspace/runpod-slim/ComfyUI
+  if [ -d "$SRC/custom_nodes" ] && [ ! -d "$COMFY_DIR/custom_nodes" ]; then
+    echo "[worker] moving custom_nodes from $SRC"
+    cp -a "$SRC/custom_nodes" "$COMFY_DIR/" 2>/dev/null || true
+  fi
+  if [ -f "$SRC/extra_model_paths.yaml" ] && [ ! -f "$COMFY_DIR/extra_model_paths.yaml" ]; then
+    echo "[worker] moving extra_model_paths.yaml from $SRC"
+    cp -a "$SRC/extra_model_paths.yaml" "$COMFY_DIR/" 2>/dev/null || true
+  fi
+fi
+
 # 兜底：镜像里确实没有 ComfyUI 源码时，直接拉 v0.30.2
 if [ ! -f "$COMFY_DIR/main.py" ]; then
   echo "[worker] cloning ComfyUI v0.30.2 as fallback"
@@ -26,6 +40,7 @@ if [ ! -f "$COMFY_DIR/main.py" ]; then
   python3 -m pip install -q -r "$COMFY_DIR/requirements.txt" || echo "WARN: requirements failed"
   # 把已构建进镜像的自定义节点搬过来
   if [ -d /workspace/runpod-slim/ComfyUI/custom_nodes ]; then
+    mkdir -p "$COMFY_DIR/custom_nodes"
     cp -a /workspace/runpod-slim/ComfyUI/custom_nodes/. "$COMFY_DIR/custom_nodes/" 2>/dev/null || true
   fi
   cat > "$COMFY_DIR/extra_model_paths.yaml" <<'YAML'
