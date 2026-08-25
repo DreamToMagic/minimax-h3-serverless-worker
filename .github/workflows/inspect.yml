@@ -1,0 +1,19 @@
+name: inspect-image
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pull and inspect image layout
+        run: |
+          docker pull ghcr.io/dreamtomagic/minimax-h3-serverless-worker:latest
+          docker run --rm --entrypoint /bin/bash ghcr.io/dreamtomagic/minimax-h3-serverless-worker:latest -lc '
+            echo "== /workspace =="; ls -la /workspace 2>/dev/null | head -30;
+            echo "== /workspace/runpod-slim =="; ls -la /workspace/runpod-slim 2>/dev/null | head -40;
+            echo "== ComfyUI =="; ls -la /workspace/runpod-slim/ComfyUI 2>/dev/null | head -40;
+            echo "== find main.py =="; find / -maxdepth 6 -name main.py 2>/dev/null | head -20;
+            echo "== find ComfyUI dirs =="; find / -maxdepth 5 -type d -name ComfyUI 2>/dev/null | head -10;
+            echo "== python =="; python3 -V 2>&1'
