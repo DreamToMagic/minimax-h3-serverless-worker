@@ -28,6 +28,7 @@ COMFY_OUTPUT_DIR = os.environ.get("COMFY_OUTPUT_DIR", "/opt/comfyui-baked/output
 COMFY_INPUT_DIR = os.environ.get("COMFY_INPUT_DIR", "/opt/comfyui-baked/input")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
+PROGRESS_URL = os.environ.get("PROGRESS_URL", "")
 GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "2400"))
 
 MODEL_FILES = {
@@ -250,8 +251,10 @@ def collect_outputs(item):
     return paths
 
 
-def poll(prompt_id, timeout=GENERATION_TIMEOUT):
+def poll(prompt_id, job_id=None, timeout=GENERATION_TIMEOUT):
     deadline = time.time() + timeout
+    start = time.time()
+    last_report = 0
     while time.time() < deadline:
         try:
             r = requests.get(f"{COMFY_URL}/history/{prompt_id}", timeout=30)
@@ -261,6 +264,10 @@ def poll(prompt_id, timeout=GENERATION_TIMEOUT):
             time.sleep(5)
             continue
         item = data.get(prompt_id)
+        elapsed = int(time.time() - start)
+        if job_id and elapsed - last_report >= 30:
+            last_report = elapsed
+            report_progress(job_id, "采样生成中", seconds=elapsed)
         if item and item.get("status", {}).get("completed"):
             paths = collect_outputs(item)
             if not paths:
@@ -271,6 +278,19 @@ def poll(prompt_id, timeout=GENERATION_TIMEOUT):
                                json.dumps(item.get("messages", []))[:800])
         time.sleep(5)
     raise TimeoutError("generation timeout")
+
+
+def report_progress(job_id, stage, percent=None, seconds=0):
+    """把阶段进度回传平台（前端任务卡显示）。"""
+    if not PROGRESS_URL or not job_id:
+        return
+    try:
+        sig = hmac.new(WEBHOOK_SECRET.encode("utf-8"), job_id.encode("utf-8"), hashlib.sha256).hexdigest()
+        requests.post(PROGRESS_URL, json={
+            "job_id": job_id, "stage": stage, "percent": percent, "seconds": seconds
+        }, headers={"X-Signature": sig}, timeout=10)
+    except Exception as e:
+        log(f"progress report failed: {e}")
 
 
 def upload_to_platform(job_id, filepath, filename):
@@ -402,7 +422,9 @@ def handler(job):
     mode = str(job_input.get("mode") or "t2v")
     audio_mode = str(job_input.get("audio_mode") or "auto")
     audio_prompt = str(job_input.get("audio_prompt") or "")
-    refs = download_refs(job_input.get("refs") or [])
+    raw_refs = job_input.get("refs") or []
+    refs_requested = bool(raw_refs)
+    refs = download_refs(raw_refs)
     model_file = MODEL_FILES.get(model, MODEL_FILES["full"])
     # 卷内只保证完整 INT8；pruned 缺失时自动回退，避免坏单
     if not os.path.isfile(os.path.join("/runpod-volume/models", "diffusion_models", model_file)):
@@ -412,21 +434,27 @@ def handler(job):
     vram_gb = get_vram_gb()
     width, height, length, steps, use_swap, tier = adapt_to_vram(vram_gb, width, height, length, steps)
     log(f"job {job_id}: vram={vram_gb}G tier={tier} -> {width}x{height} len={length} steps={steps} swap={use_swap} model={model}")
+    report_progress(job_id, "环境就绪，准备生成", seconds=0)
+    if refs_requested:
+        report_progress(job_id, "下载参考素材", seconds=0)
     graph = build_graph(prompt, width, height, length, steps, seed, model_file,
                         use_swap=use_swap, mode=mode, refs=refs,
                         audio_mode=audio_mode, audio_prompt=audio_prompt)
+    report_progress(job_id, "提交 ComfyUI", seconds=0)
     prompt_id = submit_prompt(graph)
     log(f"job {job_id}: submitted prompt_id={prompt_id}")
-    paths = poll(prompt_id)
+    paths = poll(prompt_id, job_id=job_id)
 
     uploaded = []
     for p in paths:
         filename = os.path.basename(p)
+        report_progress(job_id, "上传视频到平台", seconds=0)
         if job_id and WEBHOOK_URL:
             upload_to_platform(job_id, p, filename)
             uploaded.append(filename)
         else:
             log(f"no webhook configured, keeping file local: {filename}")
+    report_progress(job_id, "完成", percent=100, seconds=0)
 
     return {
         "status": "COMPLETED",
