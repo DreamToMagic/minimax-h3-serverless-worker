@@ -84,8 +84,19 @@ def self_check():
     sys.exit(1)
 
 
-def build_graph(prompt, width, height, length, steps, seed, model_file):
-    return {
+def build_graph(prompt, width, height, length, steps, seed, model_file, use_swap=False):
+    clip_src = ["3", 0]
+    model_src = ["4b", 0]
+    extra = {}
+    if use_swap:
+        # 16/24/32G 显存：UniBlockSwap 把模型块逐块换入换出，牺牲速度换能跑
+        extra["3b"] = {"class_type": "UniBlockSwapTE", "inputs": {
+            "clip": ["3", 0], "num_blocks": -1}}
+        extra["4c"] = {"class_type": "UniBlockSwap", "inputs": {
+            "model": ["4b", 0], "num_blocks": -1}}
+        clip_src = ["3b", 0]
+        model_src = ["4c", 0]
+    graph = {
         "1": {"class_type": "VAELoader", "inputs": {"vae_name": "minimax_h3_video_vae_fp16.safetensors"}},
         "2": {"class_type": "VAELoader", "inputs": {"vae_name": "minimax_h3_audio_vae_fp32.safetensors"}},
         "3": {"class_type": "CLIPLoader", "inputs": {
@@ -98,14 +109,14 @@ def build_graph(prompt, width, height, length, steps, seed, model_file):
             "lora_name": "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors",
             "strength_model": 1.0}},
         "5": {"class_type": "MiniMaxH3AudioConditioningT8", "inputs": {
-            "clip": ["3", 0], "video_vae": ["1", 0], "audio_vae": ["2", 0],
+            "clip": clip_src, "video_vae": ["1", 0], "audio_vae": ["2", 0],
             "prompt": prompt, "width": width, "height": height, "length": length,
             "audio_mode": "native", "audio_denoise_strength": 1.0,
             "add_source_as_reference": True, "prompt_primary_audio_ordinal": 0,
             "strict_prompt_tags": True, "ref_image_size": "match",
             "reference_video_policy": "official_2_to_15s", "task_type": "T2VA"}},
         "6": {"class_type": "MiniMaxH3DualClockSamplerT8", "inputs": {
-            "model": ["4b", 0], "av_latent": ["5", 1], "steps": steps,
+            "model": model_src, "av_latent": ["5", 1], "steps": steps,
             "shift_video": 12.0, "shift_audio": 3.0,
             "sampler_name": "dual_clock_euler", "scheduler": "native_flow"}},
         "7": {"class_type": "RandomNoise", "inputs": {"noise_seed": seed}},
@@ -121,6 +132,8 @@ def build_graph(prompt, width, height, length, steps, seed, model_file):
             "save_metadata": True, "trim_to_audio": False, "pingpong": False,
             "save_output": True, "images": ["10", 0], "audio": ["10", 1]}},
     }
+    graph.update(extra)
+    return graph
 
 
 def submit_prompt(graph):
@@ -207,6 +220,53 @@ def upload_to_platform(job_id, filepath, filename):
     raise RuntimeError("webhook upload failed: " + str(last_err))
 
 
+def get_vram_gb():
+    try:
+        import torch
+        props = torch.cuda.get_device_properties(0)
+        return round(props.total_memory / (1024 ** 3), 1)
+    except Exception:
+        return 0
+
+
+def fit_resolution(w, h, max_area):
+    """宽高保持 32 的倍数，缩到不超过 max_area。"""
+    if w * h <= max_area:
+        return w, h
+    s = (max_area / (w * h)) ** 0.5
+    nw = max(64, int(w * s / 32) * 32)
+    nh = max(64, int(h * s / 32) * 32)
+    return nw, nh
+
+
+def adapt_to_vram(vram_gb, width, height, length, steps):
+    """按实际显存自动降级，保证小卡也能跑（T8 README：16GB 需小画布/短片段 + 预检）。"""
+    use_swap = False
+    if vram_gb <= 0:
+        return width, height, length, steps, True, "unknown"
+    if vram_gb < 17:
+        use_swap = True
+        width, height = fit_resolution(width, height, 512 * 288)
+        length = min(length, 56)
+        steps = min(steps, 8)
+        tier = "16G"
+    elif vram_gb < 25:
+        use_swap = True
+        width, height = fit_resolution(width, height, 832 * 480)
+        length = min(length, 124)
+        steps = min(steps, 20)
+        tier = "24G"
+    elif vram_gb < 45:
+        use_swap = True
+        width, height = fit_resolution(width, height, 1024 * 576)
+        length = min(length, 124)
+        steps = min(steps, 20)
+        tier = "32G"
+    else:
+        tier = "48G+"
+    return width, height, length, steps, use_swap, tier
+
+
 def handler(job):
     job_input = job.get("input", {}) or {}
     job_id = str(job_input.get("job_id") or job.get("id") or "")
@@ -223,8 +283,10 @@ def handler(job):
         log(f"model file missing ({model_file}), fallback to full INT8")
         model_file = MODEL_FILES["full"]
 
-    log(f"job {job_id}: {width}x{height} len={length} steps={steps} model={model}")
-    graph = build_graph(prompt, width, height, length, steps, seed, model_file)
+    vram_gb = get_vram_gb()
+    width, height, length, steps, use_swap, tier = adapt_to_vram(vram_gb, width, height, length, steps)
+    log(f"job {job_id}: vram={vram_gb}G tier={tier} -> {width}x{height} len={length} steps={steps} swap={use_swap} model={model}")
+    graph = build_graph(prompt, width, height, length, steps, seed, model_file, use_swap=use_swap)
     prompt_id = submit_prompt(graph)
     log(f"job {job_id}: submitted prompt_id={prompt_id}")
     paths = poll(prompt_id)
@@ -243,6 +305,9 @@ def handler(job):
         "prompt_id": prompt_id,
         "files": [os.path.basename(p) for p in paths],
         "uploaded": uploaded,
+        "tier": tier,
+        "vram_gb": vram_gb,
+        "actual": {"width": width, "height": height, "length": length, "steps": steps},
     }
 
 
