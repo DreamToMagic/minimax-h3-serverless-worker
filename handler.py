@@ -36,7 +36,6 @@ MODEL_FILES = {
 
 REQUIRED_MODELS = [
     ("diffusion_models", "minimax_h3_fl2va_int8_convrot.safetensors"),
-    ("diffusion_models", "minimax_h3_fl2va_pruned_int8_convrot.safetensors"),
     ("text_encoders", "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"),
     ("vae", "minimax_h3_video_vae_fp16.safetensors"),
     ("vae", "minimax_h3_audio_vae_fp32.safetensors"),
@@ -219,6 +218,10 @@ def handler(job):
     seed = int(job_input.get("seed") or 0)
     model = str(job_input.get("model") or "full")
     model_file = MODEL_FILES.get(model, MODEL_FILES["full"])
+    # 卷内只保证完整 INT8；pruned 缺失时自动回退，避免坏单
+    if not os.path.isfile(os.path.join("/runpod-volume/models", "diffusion_models", model_file)):
+        log(f"model file missing ({model_file}), fallback to full INT8")
+        model_file = MODEL_FILES["full"]
 
     log(f"job {job_id}: {width}x{height} len={length} steps={steps} model={model}")
     graph = build_graph(prompt, width, height, length, steps, seed, model_file)
