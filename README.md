@@ -12,6 +12,11 @@
    → 平台 webhook 落盘到用户 outputs
 ```
 
+## 模型/加速说明
+
+- 默认使用 `pruned INT8`。
+- **默认不加载 Turbo LoRA**；只有任务显式传入 `turbo_lora: true` 时才启用，避免在 8 步以上产生过度平滑/果冻感。
+
 ## 文件
 
 - `Dockerfile`：基于 `runpod/comfyui:cuda13.0`（本站已实测），固定

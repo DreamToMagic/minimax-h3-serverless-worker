@@ -102,7 +102,8 @@ AUDIO_STYLE_PROMPTS = {
 
 
 def build_graph(prompt, width, height, length, steps, seed, model_file,
-                use_swap=False, mode="t2v", refs=None, audio_mode="auto", audio_prompt=""):
+                use_swap=False, mode="t2v", refs=None, audio_mode="auto", audio_prompt="",
+                use_turbo=False):
     refs = refs or {}
     images = refs.get("images") or []
     videos = refs.get("videos") or []
@@ -120,14 +121,21 @@ def build_graph(prompt, width, height, length, steps, seed, model_file,
     prompt_primary_audio_ordinal = 1 if audio_description else 0
 
     clip_src = ["3", 0]
-    model_src = ["4b", 0]
+    model_src = ["4", 0]
     extra = {}
+    if use_turbo:
+        # Turbo LoRA 是 4 步加速专用；默认不启用，仅当请求明确要求时使用
+        extra["4b"] = {"class_type": "LoraLoaderModelOnly", "inputs": {
+            "model": ["4", 0],
+            "lora_name": "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors",
+            "strength_model": 1.0}}
+        model_src = ["4b", 0]
     if use_swap:
         # 16/24/32G 显存：UniBlockSwap 把模型块逐块换入换出，牺牲速度换能跑
         extra["3b"] = {"class_type": "UniBlockSwapTE", "inputs": {
             "clip": ["3", 0], "num_blocks": -1}}
         extra["4c"] = {"class_type": "UniBlockSwap", "inputs": {
-            "model": ["4b", 0], "num_blocks": -1}}
+            "model": model_src, "num_blocks": -1}}
         clip_src = ["3b", 0]
         model_src = ["4c", 0]
     graph = {
@@ -138,10 +146,6 @@ def build_graph(prompt, width, height, length, steps, seed, model_file,
             "type": "minimax", "device": "default"}},
         "4": {"class_type": "UNETLoader", "inputs": {
             "unet_name": model_file, "weight_dtype": "default"}},
-        "4b": {"class_type": "LoraLoaderModelOnly", "inputs": {
-            "model": ["4", 0],
-            "lora_name": "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors",
-            "strength_model": 1.0}},
         "6": {"class_type": "MiniMaxH3DualClockSamplerT8", "inputs": {
             "model": model_src, "av_latent": ["5", 1], "steps": steps,
             "shift_video": 12.0, "shift_audio": 3.0,
@@ -418,6 +422,7 @@ def handler(job):
     mode = str(job_input.get("mode") or "t2v")
     audio_mode = str(job_input.get("audio_mode") or "auto")
     audio_prompt = str(job_input.get("audio_prompt") or "")
+    use_turbo = bool(job_input.get("turbo_lora") or job_input.get("turboLora"))
     raw_refs = job_input.get("refs") or []
     refs_requested = bool(raw_refs)
     refs = download_refs(raw_refs)
@@ -429,13 +434,14 @@ def handler(job):
 
     vram_gb = get_vram_gb()
     width, height, length, steps, use_swap, tier = adapt_to_vram(vram_gb, width, height, length, steps)
-    log(f"job {job_id}: vram={vram_gb}G tier={tier} -> {width}x{height} len={length} steps={steps} swap={use_swap} model={model}")
+    log(f"job {job_id}: vram={vram_gb}G tier={tier} -> {width}x{height} len={length} steps={steps} swap={use_swap} turbo={use_turbo} model={model}")
     report_progress(job_id, "环境就绪，准备生成", seconds=0)
     if refs_requested:
         report_progress(job_id, "下载参考素材", seconds=0)
     graph = build_graph(prompt, width, height, length, steps, seed, model_file,
                         use_swap=use_swap, mode=mode, refs=refs,
-                        audio_mode=audio_mode, audio_prompt=audio_prompt)
+                        audio_mode=audio_mode, audio_prompt=audio_prompt,
+                        use_turbo=use_turbo)
     report_progress(job_id, "提交 ComfyUI", seconds=0)
     prompt_id = submit_prompt(graph)
     log(f"job {job_id}: submitted prompt_id={prompt_id}")
