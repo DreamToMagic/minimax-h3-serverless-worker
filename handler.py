@@ -414,7 +414,7 @@ def handler(job):
     length = int(job_input.get("length") or 22)
     steps = int(job_input.get("steps") or 4)
     seed = int(job_input.get("seed") or 0)
-    model = str(job_input.get("model") or "full")
+    model = str(job_input.get("model") or "pruned")
     mode = str(job_input.get("mode") or "t2v")
     audio_mode = str(job_input.get("audio_mode") or "auto")
     audio_prompt = str(job_input.get("audio_prompt") or "")
