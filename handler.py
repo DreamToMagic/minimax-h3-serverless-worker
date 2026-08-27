@@ -37,11 +37,13 @@ MODEL_FILES = {
 }
 
 REQUIRED_MODELS = [
-    ("diffusion_models", "minimax_h3_fl2va_int8_convrot.safetensors"),
+    # 当前网络卷实际只保留 pruned INT8；完整 INT8 已删除。
+    # 默认任务就是 pruned，自检只要求默认路径，避免一接任务就误杀 worker。
+    ("diffusion_models", "minimax_h3_fl2va_pruned_int8_convrot.safetensors"),
     ("text_encoders", "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"),
     ("vae", "minimax_h3_video_vae_fp16.safetensors"),
     ("vae", "minimax_h3_audio_vae_fp32.safetensors"),
-    ("loras", "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"),
+    # Turbo LoRA 只在 turbo_lora=true 时才需要；不作为默认自检必要条件。
 ]
 
 
@@ -426,11 +428,17 @@ def handler(job):
     raw_refs = job_input.get("refs") or []
     refs_requested = bool(raw_refs)
     refs = download_refs(raw_refs)
-    model_file = MODEL_FILES.get(model, MODEL_FILES["full"])
-    # 卷内只保证完整 INT8；pruned 缺失时自动回退，避免坏单
-    if not os.path.isfile(os.path.join("/runpod-volume/models", "diffusion_models", model_file)):
-        log(f"model file missing ({model_file}), fallback to full INT8")
-        model_file = MODEL_FILES["full"]
+    model_file = MODEL_FILES.get(model, MODEL_FILES["pruned"])
+    # 按“用户指定模型 -> pruned -> full”顺序找可用的 diffusion 模型，
+    # 兼容当前只保留 pruned 的网络卷，也兼容以后同时放两份的情况。
+    candidates = [model_file]
+    for fallback in (MODEL_FILES["pruned"], MODEL_FILES["full"]):
+        if fallback not in candidates:
+            candidates.append(fallback)
+    model_root = os.path.join("/runpod-volume/models", "diffusion_models")
+    model_file = next((name for name in candidates if os.path.isfile(os.path.join(model_root, name))), None)
+    if not model_file:
+        raise RuntimeError("diffusion model files missing from network volume")
 
     vram_gb = get_vram_gb()
     width, height, length, steps, use_swap, tier = adapt_to_vram(vram_gb, width, height, length, steps)

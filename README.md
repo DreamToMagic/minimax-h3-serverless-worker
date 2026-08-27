@@ -39,15 +39,15 @@ ghcr.io/dreamtomagic/minimax-h3-serverless-worker:latest
 ```text
 /runpod-volume/models/
 ├── diffusion_models/
-│   ├── minimax_h3_fl2va_int8_convrot.safetensors
-│   └── minimax_h3_fl2va_pruned_int8_convrot.safetensors
+│   ├── minimax_h3_fl2va_pruned_int8_convrot.safetensors   # 默认必需
+│   └── minimax_h3_fl2va_int8_convrot.safetensors          # 可选（完整版，已从卷删除）
 ├── text_encoders/
 │   └── qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors
 ├── vae/
 │   ├── minimax_h3_video_vae_fp16.safetensors
 │   └── minimax_h3_audio_vae_fp32.safetensors
 └── loras/
-    └── minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors
+    └── minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors  # 仅 turbo_lora=true 时必需
 ```
 
 ## 环境变量（Serverless 模板配置）
